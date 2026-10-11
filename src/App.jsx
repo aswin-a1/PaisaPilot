@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFinanceState } from "./hooks/useFinanceState";
 import "./App.css";
 const integerCurrency = new Intl.NumberFormat("en-IN", {
@@ -26,6 +26,11 @@ const exactMoney = (value) => {
   const amount = safeNumber(value);
   const formatted = decimalCurrency.format(Math.abs(amount));
   return amount < 0 ? `−${formatted}` : formatted;
+};
+
+const commitmentKindLabel = (item) => {
+  const kind = item.kind || (item.id === "commitment-1" || item.id === "commitment-2" ? "subscription" : "bill");
+  return kind === "subscription" ? "Subscription" : "Bill";
 };
 
 const navItems = [
@@ -80,12 +85,19 @@ function ProgressBar({ value, color = "blue", label = "Progress" }) {
   );
 }
 function ForecastChart({ metrics, currentDay }) {
+  const range = Math.max(
+    1000,
+    Math.abs(metrics.cashBalance),
+    Math.abs(metrics.projectedClosingBalance)
+  );
+  const valueToY = (balance) =>
+    Math.min(110, Math.max(16, 62 - (balance / range) * 42));
+  const start = valueToY(metrics.cashBalance);
+  const end = valueToY(metrics.projectedClosingBalance);
   const points = [0, 1, 2, 3, 4, 5, 6, 7].map((index) => {
     const x = 8 + index * 48;
-    const start = 17;
-    const end = metrics.projectedClosingBalance < 0 ? 104 : 48;
-    const curve = Math.sin(index * 1.3) * 9;
-    const y = start + (end - start) * (index / 7) + curve;
+    const curve = Math.sin(index * 1.3) * Math.min(4, Math.abs(end - start) * 0.05);
+    const y = Math.min(112, Math.max(12, start + (end - start) * (index / 7) + curve));
     return `${x},${y}`;
   });
   const path = points.join(" ");
@@ -95,7 +107,7 @@ function ForecastChart({ metrics, currentDay }) {
         viewBox="0 0 350 125"
         preserveAspectRatio="none"
         role="img"
-        aria-label={`Illustrative 30-day forecast. Projected closing balance: ${money(metrics.projectedClosingBalance)}.`}
+        aria-label={`Illustrative 30-day forecast, scaled to the current cash and projected closing balance. Projected closing balance: ${money(metrics.projectedClosingBalance)}.`}
       >
         <defs>
           <linearGradient id="forecastGlow" x1="0" y1="0" x2="0" y2="1">
@@ -115,10 +127,8 @@ function ForecastChart({ metrics, currentDay }) {
             strokeDasharray="4 5"
           />
         ))}
-        <polygon
-          points={`8,125 ${path} 344,125`}
-          fill="url(#forecastGlow)"
-        />
+        <line x1="0" y1="62" x2="350" y2="62" stroke="currentColor" strokeOpacity=".18" strokeDasharray="3 5" />
+        <polygon points={`8,125 ${path} 344,125`} fill="url(#forecastGlow)" />
         <polyline
           points={path}
           fill="none"
@@ -130,7 +140,7 @@ function ForecastChart({ metrics, currentDay }) {
         />
         <circle
           cx="344"
-          cy={metrics.projectedClosingBalance < 0 ? 104 : 48}
+          cy={end}
           r="4"
           fill={metrics.projectedClosingBalance < 0 ? "#ff8496" : "#53cfff"}
         />
@@ -150,7 +160,12 @@ function ScenarioLab({
   onApply,
   onDiscard,
 }) {
+  const [shortfallConfirmationOpen, setShortfallConfirmationOpen] = useState(false);
+  const remainingGoal = Math.max(0, state.savingsGoal.target - state.savingsGoal.saved);
+  const exceedsSavingsGoal = draft.type === "savings" && Number(draft.amount) > remainingGoal;
+
   const update = (key, value) => {
+    setShortfallConfirmationOpen(false);
     const nextDraft = { ...draft, [key]: value };
     setDraft(nextDraft);
   };
@@ -159,10 +174,12 @@ function ScenarioLab({
     const defaults = {
       purchase: { description: "New headphones", amount: "799", category: "Shopping" },
       unexpectedExpense: { description: "Unexpected expense", amount: "1500", category: "Health" },
-      savings: { description: "Extra savings", amount: "300", category: "Savings" },
+      savings: { description: "Extra savings", amount: String(Math.min(300, Math.max(1, remainingGoal))), category: "Savings" },
       income: { description: "Additional income", amount: "1000", category: "Income" },
       cancelCommitment: { description: "Cancel upcoming bill", amount: "0", category: "Other" },
+      payCommitment: { description: "Pay upcoming bill", amount: "0", category: "Commitments" },
     };
+    setShortfallConfirmationOpen(false);
     const nextDraft = {
       ...draft,
       ...(defaults[type] || defaults.purchase),
@@ -178,8 +195,9 @@ function ScenarioLab({
     { value: "savings", label: "Save more" },
     { value: "income", label: "Extra income" },
     { value: "cancelCommitment", label: "Cancel a bill" },
+    { value: "payCommitment", label: "Pay a bill" },
   ];
-  const isCommitment = draft.type === "cancelCommitment";
+  const isCommitment = ["cancelCommitment", "payCommitment"].includes(draft.type);
   const before = preview?.before;
   const after = preview?.after;
   return (
@@ -243,6 +261,7 @@ function ScenarioLab({
               id="scenario-amount"
               type="number"
               min="1"
+              max={draft.type === "savings" ? remainingGoal : undefined}
               step="1"
               inputMode="decimal"
               value={draft.amount}
@@ -268,6 +287,11 @@ function ScenarioLab({
           </select>
         </div>
       )}
+      {exceedsSavingsGoal && (
+        <p className="warning-note" role="alert">
+          Only {money(remainingGoal)} remains before this savings goal is reached. Lower the amount to continue.
+        </p>
+      )}
       {preview && before && after && (
         <div className="preview-box">
           <div className="preview-heading">
@@ -283,6 +307,7 @@ function ScenarioLab({
               ["Safe to spend", before.safeToSpend, after.safeToSpend],
               ["Daily allowance", before.dailyAllowance, after.dailyAllowance],
               ["Day 30 forecast", before.projectedClosingBalance, after.projectedClosingBalance],
+              ["Saved toward goal", before.savingsTransferred, after.savingsTransferred],
             ].map(([label, oldValue, newValue]) => (
               <div className="comparison-item" key={label}>
                 <span className="muted">{label}</span>
@@ -320,12 +345,38 @@ function ScenarioLab({
             <button
               type="button"
               className="button-primary"
-              onClick={onApply}
-              disabled={!preview.changed || (isCommitment && !after)}
+              onClick={() => {
+                if (after.cashBalance < 0 || after.safeToSpend < 0) {
+                  setShortfallConfirmationOpen(true);
+                } else {
+                  onApply();
+                }
+              }}
+              disabled={!preview.changed || (isCommitment && !after) || exceedsSavingsGoal}
             >
-              Apply decision <span aria-hidden="true">↗</span>
+              {after.cashBalance < 0 || after.safeToSpend < 0 ? "Review shortfall" : "Apply decision"} <span aria-hidden="true">↗</span>
             </button>
           </div>
+          {shortfallConfirmationOpen && (after.cashBalance < 0 || after.safeToSpend < 0) && (
+            <div className="shortfall-confirmation" role="group" aria-label="Confirm shortfall override">
+              <p role="alert">
+                <strong>Shortfall warning.</strong> This decision would leave cash at {money(after.cashBalance)} and safe-to-spend at {money(after.safeToSpend)}. Apply it anyway?
+              </p>
+              <div className="scenario-actions">
+                <button type="button" className="button-secondary" onClick={() => setShortfallConfirmationOpen(false)}>
+                  Go back
+                </button>
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={() => {
+                    setShortfallConfirmationOpen(false);
+                    onApply();
+                  }}
+                >Apply anyway</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -340,10 +391,51 @@ export default function App() {
     applyDecision,
     discardDecision,
     deleteTransaction,
+    deleteIncome,
+    advanceDay,
     resetDemo,
   } = useFinanceState();
   const [view, setView] = useState("Overview");
   const [notice, setNotice] = useState("");
+  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  const cancelResetRef = useRef(null);
+  useEffect(() => {
+    if (!resetDialogOpen) return undefined;
+
+    const previouslyFocused = document.activeElement;
+    cancelResetRef.current?.focus();
+
+    const handleDialogKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setResetDialogOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+      const dialog = document.getElementById("reset-dialog");
+      const focusable = dialog?.querySelectorAll(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (!focusable?.length) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleDialogKeyDown);
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [resetDialogOpen]);
+
   const [draft, setDraft] = useState({
     type: "purchase",
     description: "New headphones",
@@ -366,7 +458,7 @@ export default function App() {
         type === "unexpectedExpense"
           ? "1500"
           : type === "savings"
-            ? "300"
+            ? String(Math.min(300, Math.max(1, financeState.savingsGoal.target - financeState.savingsGoal.saved)))
             : type === "income"
               ? "1000"
               : "799",
@@ -382,6 +474,11 @@ export default function App() {
       amount: Number(nextDraft.amount),
     });
     setView("Money Lab");
+  };
+  const openMoneyLab = () => {
+    setView("Money Lab");
+    setNotice("");
+    previewDecision({ ...draft, amount: Number(draft.amount) });
   };
   const updateDraft = (nextDraft) => {
     setDraft(nextDraft);
@@ -402,6 +499,15 @@ export default function App() {
     discardDecision();
     setNotice("Simulation discarded. Your committed finances are unchanged.");
   };
+  const advanceSimulationDay = () => {
+    if (financeState.currentDay >= 30) return;
+    const nextDay = Math.min(30, financeState.currentDay + 1);
+    advanceDay();
+    setView("Overview");
+    setNotice(nextDay === 30
+      ? "Day 30 reached. This 30-day simulation is complete."
+      : `Advanced to Day ${nextDay} of 30. Forecasts updated.`);
+  };
   const transactions = useMemo(
     () => [
       ...financeState.transactions,
@@ -414,12 +520,20 @@ export default function App() {
     [financeState.transactions, financeState.incomes]
   );
   const savingsProgress = metrics.savingsProgress;
-  const reset = () => {
-    if (window.confirm("Reset all changes and restore the original demo?")) {
-      resetDemo();
-      setNotice("Demo reset to its original state.");
-      setView("Overview");
-    }
+  const totalFunds = Math.max(1, financeState.budget + metrics.totalIncome);
+  const spentShare = Math.min(100, Math.max(0, (metrics.paidExpenses / totalFunds) * 100));
+  const savedShare = Math.min(
+    100 - spentShare,
+    Math.max(0, (metrics.savingsTransferred / totalFunds) * 100)
+  );
+  const cashShare = Math.max(0, 100 - spentShare - savedShare);
+  const reset = () => setResetDialogOpen(true);
+
+  const confirmReset = () => {
+    resetDemo();
+    setNotice("Demo reset to its original state.");
+    setView("Overview");
+    setResetDialogOpen(false);
   };
   return (
     <div className="app-shell">
@@ -449,10 +563,12 @@ export default function App() {
               type="button"
               className={`nav-item ${view === item.name ? "active" : ""}`}
               key={item.name}
+              aria-label={item.name}
+              title={item.name}
               onClick={() => {
                 setView(item.name);
                 setNotice("");
-                if (item.name === "Money Lab") startScenario("purchase");
+                if (item.name === "Money Lab") openMoneyLab();
               }}
             >
               <Icon>{item.icon}</Icon>
@@ -476,6 +592,25 @@ export default function App() {
         </div>
       </aside>
       <main className="main-area">
+        <a
+          className="mobile-brand"
+          href="#overview"
+          onClick={(event) => {
+            event.preventDefault();
+            setView("Overview");
+            setNotice("");
+          }}
+          aria-label="PaisaPilot overview"
+        >
+          <img
+            className="mobile-brand-logo"
+            src="/paisapilot-logo.png"
+            alt=""
+            width="36"
+            height="36"
+          />
+          <span className="brand-name">paisa<span>pilot</span></span>
+        </a>
         <header className="topbar">
           <div>
             <p className="eyebrow">YOUR FINANCIAL SPACE</p>
@@ -488,7 +623,7 @@ export default function App() {
               className="avatar top-avatar"
               aria-label="Reset demo"
               onClick={reset}
-            >P</button>
+            >↺</button>
           </div>
         </header>
         {notice && (
@@ -507,9 +642,20 @@ export default function App() {
                   You have {metrics.daysRemaining} days left. Let's make every rupee count.
                 </p>
               </div>
-              <button type="button" className="button-primary" onClick={() => startScenario("purchase")}>
-                <Icon>⌁</Icon> Open Money Lab
-              </button>
+              <div className="welcome-actions">
+                <button type="button" className="button-primary" onClick={() => startScenario("purchase")}>
+                  <Icon>⌁</Icon> Open Money Lab
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary advance-day-button"
+                  onClick={advanceSimulationDay}
+                  disabled={financeState.currentDay >= 30}
+                  aria-label={financeState.currentDay >= 30 ? "30-day simulation complete" : `Advance simulation to Day ${financeState.currentDay + 1}`}
+                >
+                  {financeState.currentDay >= 30 ? "30-day plan complete" : `Advance to Day ${financeState.currentDay + 1}`} <span aria-hidden="true">→</span>
+                </button>
+              </div>
             </section>
             <section className="metrics-grid">
               <MetricCard
@@ -550,15 +696,23 @@ export default function App() {
                 />
                 <div className="budget-number-row">
                   <div>
-                    <p className="muted">Budget spent</p>
+                    <p className="muted">Spent from available funds</p>
                     <strong className="large-number">{money(metrics.paidExpenses)}</strong>
                   </div>
                   <div className="budget-percentage">
-                    {Math.round((metrics.paidExpenses / financeState.budget) * 100)}%
-                    <span>of budget</span>
+                    {Math.round((metrics.paidExpenses / totalFunds) * 100)}%
+                    <span>of available funds</span>
                   </div>
                 </div>
-                <ProgressBar value={metrics.paidExpenses / Math.max(1, financeState.budget)} label="Budget spent" />
+                <div
+                  className="budget-stack"
+                  role="img"
+                  aria-label={`Of ${money(totalFunds)} in starting funds and additional income, ${money(metrics.paidExpenses)} has been spent, ${money(metrics.savingsTransferred)} allocated to savings, and current cash balance is ${money(metrics.cashBalance)}.`}
+                >
+                  <span className="budget-segment budget-segment-spent" style={{ width: `${spentShare}%` }} />
+                  <span className="budget-segment budget-segment-saved" style={{ width: `${savedShare}%` }} />
+                  <span className="budget-segment budget-segment-cash" style={{ width: `${cashShare}%` }} />
+                </div>
                 <div className="budget-legend">
                   <span><i className="legend-dot blue-dot" /> Paid expenses</span>
                   <span><i className="legend-dot violet-dot" /> Savings allocated</span>
@@ -631,6 +785,12 @@ export default function App() {
                   </div>
                 </div>
                 <div className="health-footnote">An estimate based on your current demo data, not a credit score.</div>
+                <details className="risk-method">
+                  <summary>How is risk estimated?</summary>
+                  <p>
+                    This educational estimate starts at 20 points, adds risk when the Day 30 forecast is negative (scaled against your starting budget), adds up to 25 points when spending pace exceeds your daily allowance, and adds 10 points when the savings goal is less than half complete. The result is clamped to 0–100; higher risk means lower money health.
+                  </p>
+                </details>
               </article>
             </section>
             <section className="primary-grid lower-grid">
@@ -647,7 +807,7 @@ export default function App() {
                 </div>
                 <ForecastChart metrics={metrics} currentDay={financeState.currentDay} />
                 <p className="muted forecast-note">
-                  Based on your historical daily spending pace, unpaid bills and remaining savings target.
+                  Forecast uses the historical daily pace of regular expenses, plus unpaid bills and your remaining savings target. One-off purchases and emergencies reduce cash immediately, but are not assumed to repeat every day.
                 </p>
               </article>
               <article className="glass-panel goals-panel">
@@ -678,6 +838,9 @@ export default function App() {
                   action={<button type="button" className="text-button" onClick={() => setView("Transactions")}>View all ↗</button>}
                 />
                 <div className="transaction-list">
+                  {transactions.length === 0 && (
+                    <p className="muted empty-state">No transactions yet. Open Money Lab to simulate your first decision.</p>
+                  )}
                   {transactions.slice(0, 5).map((transaction) => (
                     <div className="transaction-row" key={transaction.id}>
                       <div className={`transaction-icon ${transaction.type}`}>
@@ -707,7 +870,7 @@ export default function App() {
                         </div>
                         <div className="commitment-description">
                           <strong>{item.name}</strong>
-                          <span>Due day {item.dueDay}</span>
+                          <span>{commitmentKindLabel(item)} · Due day {item.dueDay}</span>
                         </div>
                         <strong>{money(item.amount)}</strong>
                       </div>
@@ -769,6 +932,9 @@ export default function App() {
             <SectionTitle eyebrow="YOUR ACTIVITY" title="All transactions" />
             <p className="muted">Demo activity from your current 30-day financial plan.</p>
             <div className="transaction-list">
+              {transactions.length === 0 && (
+                <p className="muted empty-state">No transactions yet. Add income or simulate a money decision in Money Lab.</p>
+              )}
               {transactions.map((transaction) => (
                 <div className="transaction-row" key={transaction.id}>
                   <div className={`transaction-icon ${transaction.type}`}><Icon>{transaction.type === "income" ? "↙" : "↗"}</Icon></div>
@@ -779,7 +945,18 @@ export default function App() {
                   <strong className={transaction.type === "income" ? "positive" : ""}>
                     {transaction.type === "income" ? "+" : "−"}{money(transaction.amount)}
                   </strong>
-                  {transaction.type !== "income" && transaction.category !== "Commitments" && (
+                  {transaction.type === "income" ? (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => {
+                        deleteIncome(transaction.id);
+                        setNotice("Income entry deleted.");
+                      }}
+                      aria-label={`Delete income ${transaction.description}`}
+                      title={`Delete income ${transaction.description}`}
+                    >×</button>
+                  ) : transaction.category !== "Commitments" ? (
                     <button
                       type="button"
                       className="icon-button"
@@ -788,8 +965,9 @@ export default function App() {
                         setNotice("Transaction deleted.");
                       }}
                       aria-label={`Delete ${transaction.description}`}
+                      title={`Delete ${transaction.description}`}
                     >×</button>
-                  )}
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -810,15 +988,25 @@ export default function App() {
               {financeState.commitments.map((item) => (
                 <div className="commitment-row" key={item.id}>
                   <div className="commitment-date"><strong>{String(item.dueDay).padStart(2, "0")}</strong><span>DAY</span></div>
-                  <div className="commitment-description"><strong>{item.name}</strong><span>{item.status === "upcoming" ? "Unpaid" : item.status === "paid" ? "Paid" : "Cancelled"}</span></div>
+                  <div className="commitment-description"><strong>{item.name}</strong><span>{item.status === "upcoming" ? "Unpaid" : item.status === "paid" ? "Paid" : "Cancelled"} · {commitmentKindLabel(item)}</span></div>
                   <strong>{money(item.amount)}</strong>
                   {item.status === "upcoming" && (
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => startScenario("cancelCommitment", item.id)}
-                      aria-label={`Review cancellation of ${item.name}`}
-                    >↗</button>
+                    <div className="commitment-actions">
+                      <button
+                        type="button"
+                        className="commitment-pay-button"
+                        onClick={() => startScenario("payCommitment", item.id)}
+                        aria-label={`Review payment of ${item.name}`}
+                        title={`Review payment of ${item.name}`}
+                      >Pay</button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        onClick={() => startScenario("cancelCommitment", item.id)}
+                        aria-label={`Review cancellation of ${item.name}`}
+                        title={`Review cancellation of ${item.name}`}
+                      >↗</button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -831,6 +1019,40 @@ export default function App() {
           <span>Demo data · No bank connection</span>
         </footer>
       </main>
+      {resetDialogOpen && (
+        <div
+          className="dialog-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setResetDialogOpen(false);
+          }}
+        >
+          <section
+            id="reset-dialog"
+            className="reset-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="reset-dialog-title"
+            aria-describedby="reset-dialog-description"
+          >
+            <p className="eyebrow">RESET DEMO</p>
+            <h2 id="reset-dialog-title">Start fresh?</h2>
+            <p id="reset-dialog-description">
+              This restores the original ₹10,000 demo and clears the changes saved in this browser.
+            </p>
+            <div className="reset-dialog-actions">
+              <button
+                ref={cancelResetRef}
+                type="button"
+                className="button-secondary"
+                onClick={() => setResetDialogOpen(false)}
+              >Keep current data</button>
+              <button type="button" className="button-primary" onClick={confirmReset}>
+                Reset demo
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       <nav className="mobile-nav" aria-label="Mobile navigation">
         {navItems.map((item) => (
           <button
@@ -838,7 +1060,7 @@ export default function App() {
             key={item.name}
             className={view === item.name ? "active" : ""}
             onClick={() => {
-              if (item.name === "Money Lab") startScenario("purchase");
+              if (item.name === "Money Lab") openMoneyLab();
               else setView(item.name);
             }}
           >

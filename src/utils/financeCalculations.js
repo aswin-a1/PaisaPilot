@@ -53,6 +53,7 @@ export const INITIAL_FINANCE_STATE = {
   commitments: [
     {
       id: "commitment-1",
+      kind: "subscription",
       name: "Phone plan",
       amount: 399,
       dueDay: 16,
@@ -60,6 +61,7 @@ export const INITIAL_FINANCE_STATE = {
     },
     {
       id: "commitment-2",
+      kind: "subscription",
       name: "Gym membership",
       amount: 699,
       dueDay: 20,
@@ -67,6 +69,7 @@ export const INITIAL_FINANCE_STATE = {
     },
     {
       id: "commitment-3",
+      kind: "bill",
       name: "Transport pass",
       amount: 700,
       dueDay: 24,
@@ -91,6 +94,12 @@ export function createInitialFinanceState() {
 
 const clamp = (value, min, max) =>
   Math.min(max, Math.max(min, value));
+
+export function advanceFinanceDay(state) {
+  const currentDay = clamp(Number(state.currentDay) || 1, 1, 30);
+  if (currentDay >= 30) return state;
+  return { ...state, currentDay: currentDay + 1 };
+}
 
 export function calculateFinance(state) {
   const elapsedDays = clamp(state.currentDay, 1, 30);
@@ -213,7 +222,7 @@ export function applyScenarioToState(state, scenario) {
   }
 
   const nextTransactionId = () =>
-    `transaction-${state.transactions.length + 1}`;
+    `transaction-${crypto.randomUUID()}`;
 
   switch (scenario.type) {
     case "purchase":
@@ -241,7 +250,7 @@ export function applyScenarioToState(state, scenario) {
 
     case "income": {
       const income = {
-        id: `income-${state.incomes.length + 1}`,
+        id: `income-${crypto.randomUUID()}`,
         description: scenario.description || "Additional income",
         amount,
         day: state.currentDay,
@@ -254,6 +263,12 @@ export function applyScenarioToState(state, scenario) {
     }
 
     case "savings": {
+      const remainingGoal = Math.max(
+        0,
+        state.savingsGoal.target - state.savingsGoal.saved
+      );
+      if (amount > remainingGoal || remainingGoal === 0) return state;
+
       return {
         ...state,
         savingsGoal: {

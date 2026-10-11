@@ -3,6 +3,7 @@ import {
   createInitialFinanceState,
   calculateFinance,
   previewScenario,
+  advanceFinanceDay,
 } from "../utils/financeCalculations";
 
 const STORAGE_KEY = "paisapilot-finance-v1";
@@ -104,6 +105,18 @@ export function useFinanceState() {
     }));
   }
 
+  function deleteIncome(incomeId) {
+    setFinanceState((current) => ({
+      ...current,
+      incomes: current.incomes.filter((income) => income.id !== incomeId),
+    }));
+  }
+
+  function advanceDay() {
+    setFinanceState((current) => advanceFinanceDay(current));
+    setActiveScenario(null);
+  }
+
   function resetDemo() {
     setFinanceState(createInitialFinanceState());
     setActiveScenario(null);
@@ -119,6 +132,8 @@ export function useFinanceState() {
     discardDecision,
     addTransaction,
     deleteTransaction,
+    deleteIncome,
+    advanceDay,
     resetDemo,
   };
 }
