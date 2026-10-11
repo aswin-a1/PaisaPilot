@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyScenarioToState,
+  buildRunwaySeries,
   calculateFinance,
   createInitialFinanceState,
+  describeDecisionImpact,
+  previewScenario,
 } from "./financeCalculations.js";
 
 test("initial demo metrics match the intended baseline", () => {
@@ -144,4 +147,84 @@ test("simulation day advances to 30 and remains capped", async () => {
   assert.equal(advanceFinanceDay(day12).currentDay, 13);
   const day30 = { ...day12, currentDay: 30 };
   assert.equal(advanceFinanceDay(day30), day30);
+});
+
+test("runway series closing identity matches projected closing balance", () => {
+  const state = createInitialFinanceState();
+  const metrics = calculateFinance(state);
+  const series = buildRunwaySeries(state, metrics);
+  assert.equal(series.points[0].day, state.currentDay);
+  assert.equal(series.points.at(-1).day, 30);
+  assert.equal(
+    Math.round(series.projectedClosingBalance),
+    Math.round(metrics.projectedClosingBalance)
+  );
+  assert.equal(series.billReserve, metrics.upcomingCommitments);
+  assert.equal(series.reservedSavings, metrics.remainingSavingsGoal);
+});
+
+test("a one-off purchase lowers the runway without changing daily pace steps", () => {
+  const state = createInitialFinanceState();
+  const before = buildRunwaySeries(state);
+  const nextState = applyScenarioToState(state, {
+    type: "purchase",
+    description: "One-off purchase",
+    amount: 400,
+  });
+  const after = buildRunwaySeries(nextState);
+  const beforePace = before.points.filter((point) => point.day > state.currentDay);
+  const afterPace = after.points.filter((point) => point.day > state.currentDay);
+
+  assert.equal(after.points[0].cash, before.points[0].cash - 400);
+  assert.deepEqual(
+    afterPace.map((point) => point.paceDrop),
+    beforePace.map((point) => point.paceDrop)
+  );
+});
+
+test("paying a bill removes that due-day drop from the runway", () => {
+  const state = createInitialFinanceState();
+  const before = buildRunwaySeries(state);
+  const phoneDue = before.points.find((point) => point.day === 16);
+  assert.equal(phoneDue.billDrop, 399);
+
+  const nextState = applyScenarioToState(state, {
+    type: "payCommitment",
+    commitmentId: "commitment-1",
+  });
+  const after = buildRunwaySeries(nextState);
+  const paidDue = after.points.find((point) => point.day === 16);
+  assert.equal(paidDue.billDrop, 0);
+  assert.equal(
+    Math.round(after.projectedClosingBalance),
+    Math.round(before.projectedClosingBalance)
+  );
+});
+
+test("invalid preview does not change state", () => {
+  const state = createInitialFinanceState();
+  const preview = previewScenario(state, { type: "purchase", amount: 0 });
+  assert.equal(preview.changed, false);
+  assert.equal(preview.nextState, state);
+});
+
+test("decision impact reports shortfall and runway days for an oversized purchase", () => {
+  const state = createInitialFinanceState();
+  const preview = previewScenario(state, {
+    type: "purchase",
+    description: "Too much",
+    amount: 5000,
+  });
+  const impact = describeDecisionImpact(state, preview);
+  const daily = preview.before.dailyAllowance;
+
+  assert.equal(impact.changed, true);
+  assert.equal(impact.shortfall, true);
+  assert.equal(impact.canAfford, false);
+  assert.equal(impact.cashDelta, -5000);
+  assert.ok(Math.abs(impact.runwayDaysConsumed - 5000 / daily) < 1e-9);
+  assert.equal(
+    Math.round(impact.breakdown.projectedClosingBalance),
+    Math.round(preview.after.projectedClosingBalance)
+  );
 });

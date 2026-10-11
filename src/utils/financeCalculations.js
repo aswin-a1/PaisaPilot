@@ -343,3 +343,104 @@ export function previewScenario(state, scenario) {
     changed: nextState !== state,
   };
 }
+
+function commitmentDropOnDay(commitments, currentDay, day) {
+  return commitments
+    .filter((item) => item.status === "upcoming")
+    .filter((item) => {
+      const dueDay = Number(item.dueDay);
+      if (dueDay < currentDay) return day === currentDay;
+      return dueDay === day;
+    })
+    .reduce((total, item) => total + item.amount, 0);
+}
+
+export function buildRunwaySeries(state, metrics = calculateFinance(state)) {
+  const currentDay = clamp(Number(state.currentDay) || 1, 1, 30);
+  const daysRemaining = Math.max(0, 30 - currentDay);
+  const pace = metrics.averageDailySpend;
+  const points = [];
+  let cash = metrics.cashBalance;
+
+  const todayBills = commitmentDropOnDay(
+    state.commitments,
+    currentDay,
+    currentDay
+  );
+
+  points.push({
+    day: currentDay,
+    cash,
+    paceDrop: 0,
+    billDrop: todayBills,
+    kind: "today",
+  });
+  cash -= todayBills;
+
+  for (let day = currentDay + 1; day <= 30; day += 1) {
+    const billDrop = commitmentDropOnDay(state.commitments, currentDay, day);
+    cash -= pace + billDrop;
+    points.push({
+      day,
+      cash,
+      paceDrop: pace,
+      billDrop,
+      kind: billDrop > 0 ? "bill" : "pace",
+    });
+  }
+
+  const cashAfterPaceAndBills = points[points.length - 1]?.cash ?? metrics.cashBalance;
+
+  return {
+    points,
+    reservedSavings: metrics.remainingSavingsGoal,
+    paceReserve: pace * daysRemaining,
+    billReserve: metrics.upcomingCommitments,
+    projectedClosingBalance:
+      cashAfterPaceAndBills - metrics.remainingSavingsGoal,
+  };
+}
+
+export function describeDecisionImpact(state, preview) {
+  if (!preview?.before || !preview?.after) return null;
+
+  const { before, after, nextState, changed } = preview;
+  const cashDelta = after.cashBalance - before.cashBalance;
+  const daily = before.dailyAllowance;
+  const runwayDaysConsumed =
+    cashDelta >= 0
+      ? 0
+      : daily > 0
+        ? -cashDelta / daily
+        : null;
+
+  const upcoming = (nextState?.commitments || state.commitments)
+    .filter((item) => item.status === "upcoming")
+    .slice()
+    .sort((left, right) => left.dueDay - right.dueDay);
+  const nextBill = upcoming[0] || null;
+
+  return {
+    changed: Boolean(changed),
+    canAfford: after.cashBalance >= 0 && after.safeToSpend >= 0,
+    shortfall: after.cashBalance < 0 || after.safeToSpend < 0,
+    cashDelta,
+    safeDelta: after.safeToSpend - before.safeToSpend,
+    closingDelta: after.projectedClosingBalance - before.projectedClosingBalance,
+    savingsDelta: after.savingsTransferred - before.savingsTransferred,
+    remainingGoalDelta:
+      after.remainingSavingsGoal - before.remainingSavingsGoal,
+    runwayDaysConsumed,
+    nextBill,
+    nextBillCovered: !nextBill || after.cashBalance >= nextBill.amount,
+    breakdown: {
+      cashBalance: after.cashBalance,
+      paceReserve: after.averageDailySpend * after.daysRemaining,
+      unpaidBills: after.upcomingCommitments,
+      remainingSavingsGoal: after.remainingSavingsGoal,
+      projectedClosingBalance: after.projectedClosingBalance,
+    },
+    riskBefore: before.riskLabel,
+    riskAfter: after.riskLabel,
+  };
+}

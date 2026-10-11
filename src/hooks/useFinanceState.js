@@ -75,27 +75,6 @@ export function useFinanceState() {
     setActiveScenario(null);
   }
 
-  function addTransaction(transaction) {
-    const amount = Number(transaction.amount);
-
-    if (!Number.isFinite(amount) || amount <= 0) return;
-
-    setFinanceState((current) => ({
-      ...current,
-      transactions: [
-        ...current.transactions,
-        {
-          ...transaction,
-          id: crypto.randomUUID(),
-          amount,
-          day: current.currentDay,
-          type: "expense",
-          countsTowardPace: false,
-        },
-      ],
-    }));
-  }
-
   function deleteTransaction(transactionId) {
     setFinanceState((current) => ({
       ...current,
@@ -130,7 +109,6 @@ export function useFinanceState() {
     previewDecision,
     applyDecision,
     discardDecision,
-    addTransaction,
     deleteTransaction,
     deleteIncome,
     advanceDay,
